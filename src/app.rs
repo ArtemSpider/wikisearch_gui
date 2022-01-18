@@ -90,7 +90,7 @@ pub struct TemplateApp {
     state: State,
     search_from: String,
     search_to: String,
-    threads: String,
+    threads: usize,
 }
 
 pub fn is_valid_wiki_link(url: &str) -> bool {
@@ -104,18 +104,18 @@ impl Default for TemplateApp {
     fn default() -> Self {
         Self {
             state: State::Input,
-            //search_from: "https://en.wikipedia.org/wiki/It_Is_the_Law".to_string(),
+            search_from: "https://en.wikipedia.org/wiki/It_Is_the_Law".to_string(),
             //search_to: "https://en.wikipedia.org/wiki/Yale_University".to_string(),
-            search_from: "https://en.wikipedia.org/wiki/Dave_Hollins".to_string(),
+            //search_from: "https://en.wikipedia.org/wiki/Dave_Hollins".to_string(),
             search_to: "https://en.wikipedia.org/wiki/Dab_(dance)".to_string(),
-            threads: "1".to_string(),
+            threads: 1,
         }
     }
 }
 
 impl TemplateApp {
     fn input_state(&mut self, _: &egui::CtxRef, ui: &mut egui::Ui) {
-        egui::Grid::new("1").show(ui, |ui| {
+        egui::Grid::new("1").max_col_width(10000f32).show(ui, |ui| {
             ui.label("From: ");
             ui.add_enabled(true, egui::TextEdit::singleline(&mut self.search_from));
             ui.end_row();
@@ -123,21 +123,13 @@ impl TemplateApp {
             ui.label("To: ");
             ui.add_enabled(true, egui::TextEdit::singleline(&mut self.search_to));
             ui.end_row();
-
-            ui.label("Threads: ");
-            ui.add_enabled(true, egui::TextEdit::singleline(&mut self.threads));
-            ui.end_row();
         });
+        ui.add(egui::Slider::new(&mut self.threads, 1..=100).text("threads"));
 
         if ui.button("Search").clicked() {
-            let threads = self.threads.parse::<usize>();
-
-            if threads.is_ok() {
-                let threads = threads.unwrap();
-                if threads > 0 && threads <= 100 && 
-                   is_valid_wiki_link(&self.search_from[..]) && is_valid_wiki_link(&self.search_to[..]) {
-                    self.state = State::Searching(SearchingInfo::new(&self.search_from[..], &self.search_to[..], threads));
-                }
+            if self.threads > 0 && self.threads <= 100 && 
+                is_valid_wiki_link(&self.search_from[..]) && is_valid_wiki_link(&self.search_to[..]) {
+                self.state = State::Searching(SearchingInfo::new(&self.search_from[..], &self.search_to[..], self.threads));
             }
         }
     }
@@ -163,7 +155,7 @@ impl TemplateApp {
 
             ctx.request_repaint();
 
-            egui::Grid::new("1").show(ui, |ui| {
+            egui::Grid::new("1").max_col_width(10000f32).show(ui, |ui| {
                 ui.label("From: ");
                 ui.add_enabled(false, egui::TextEdit::singleline(&mut info.search_from));
                 ui.end_row();
@@ -171,11 +163,8 @@ impl TemplateApp {
                 ui.label("To: ");
                 ui.add_enabled(false, egui::TextEdit::singleline(&mut info.search_to));
                 ui.end_row();
-    
-                ui.label("Threads: ");
-                ui.add_enabled(false, egui::TextEdit::singleline(&mut info.threads.to_string()));
-                ui.end_row();
             });
+            ui.label(format!("{} thread{} used", info.threads.to_string(), if info.threads > 1 {"s are"} else {" is"}));
     
             loop {
                 let nol_res = info.num_of_links.try_recv();
@@ -196,8 +185,8 @@ impl TemplateApp {
                 }
             }
     
-            ui.label(format!("Processed: {}", info.num_of_processed));
-            ui.label(format!("In queue: {}", info.num_in_queue));
+            ui.label(format!("Pages processed: {}", info.num_of_processed));
+            ui.label(format!("Pages in queue: {}", info.num_in_queue));
             ui.label(format!("Elapsed time: {}s", info.start_instant.elapsed().as_secs_f32().to_string()));
 
             let dt_res = info.dead_threads_rec.try_recv();
@@ -225,7 +214,7 @@ impl TemplateApp {
         
     fn found_state(&mut self, _: &egui::CtxRef, ui: &mut egui::Ui) {
         if let State::Found(info) = &mut self.state {
-            egui::Grid::new("1").show(ui, |ui| {
+            egui::Grid::new("1").max_col_width(10000f32).show(ui, |ui| {
                 ui.label("From: ");
                 ui.add_enabled(false, egui::TextEdit::singleline(&mut info.search_from));
                 ui.end_row();
@@ -233,18 +222,15 @@ impl TemplateApp {
                 ui.label("To: ");
                 ui.add_enabled(false, egui::TextEdit::singleline(&mut info.search_to));
                 ui.end_row();
-    
-                ui.label("Threads: ");
-                ui.add_enabled(false, egui::TextEdit::singleline(&mut info.used_threads.to_string()));
-                ui.end_row();
             });
+            ui.label(format!("{} thread{} were used", info.used_threads.to_string(), if info.used_threads > 1 {"s"} else {""}));
 
-            ui.label(format!("Processed: {}", info.num_of_processed));
+            ui.label(format!("Pages processed: {}", info.num_of_processed));
             ui.label(format!("Elapsed time: {}s", info.duration.as_secs_f32().to_string()));
     
             ui.label("Path:");
             for s in &info.path {
-                ui.label(s);
+                ui.hyperlink(s);
             }
         }
     }
