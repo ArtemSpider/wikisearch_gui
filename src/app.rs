@@ -37,7 +37,7 @@ impl SearchingInfo {
         let (res_sender, res_reciever) = mpsc::channel();
 
         let _thread = thread::spawn(move || {
-            let res = search::search(&sf[..], &st[..], threads, 0, nol_sender, dt_sender);
+            let res = search::search(sf.as_str(), st.as_str(), threads, 0, nol_sender, dt_sender);
             res_sender.send(res).unwrap();
         });
         
@@ -128,8 +128,8 @@ impl TemplateApp {
 
         if ui.button("Search").clicked() {
             if self.threads > 0 && self.threads <= 100 && 
-                is_valid_wiki_link(&self.search_from[..]) && is_valid_wiki_link(&self.search_to[..]) {
-                self.state = State::Searching(SearchingInfo::new(&self.search_from[..], &self.search_to[..], self.threads));
+                is_valid_wiki_link(self.search_from.as_str()) && is_valid_wiki_link(self.search_to.as_str()) {
+                self.state = State::Searching(SearchingInfo::new(self.search_from.as_str(), self.search_to.as_str(), self.threads));
             }
         }
     }
@@ -185,7 +185,7 @@ impl TemplateApp {
                 }
             }
     
-            ui.label(format!("Pages processed: {}", info.num_of_processed));
+            ui.label(format!("Pages processed: {} ({} per second)", info.num_of_processed, (info.num_of_processed as f32 / info.start_instant.elapsed().as_secs_f32()) as u32));
             ui.label(format!("Pages in queue: {}", info.num_in_queue));
             ui.label(format!("Elapsed time: {}s", info.start_instant.elapsed().as_secs_f32().to_string()));
 
@@ -225,7 +225,7 @@ impl TemplateApp {
             });
             ui.label(format!("{} thread{} were used", info.used_threads.to_string(), if info.used_threads > 1 {"s"} else {""}));
 
-            ui.label(format!("Pages processed: {}", info.num_of_processed));
+            ui.label(format!("Pages processed: {} ({} per second)", info.num_of_processed, (info.num_of_processed as f32 / info.duration.as_secs_f32()) as u32));
             ui.label(format!("Elapsed time: {}s", info.duration.as_secs_f32().to_string()));
     
             ui.label("Path:");

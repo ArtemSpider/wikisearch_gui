@@ -15,7 +15,7 @@ fn get_html(from: &str, client: &mut Client) -> Result<String, Box<dyn std::erro
 fn get_links(from: &str, client: &mut Client) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     //let start = Instant::now();
 
-    let html = get_html(&("https://en.wikipedia.org/wiki/".to_string() + &from)[..], client)?;
+    let html = get_html(("https://en.wikipedia.org/wiki/".to_string() + &from).as_str(), client)?;
 
     //println!("get_html took {:?}", start.elapsed());
 
@@ -92,7 +92,7 @@ pub fn search(from: &str, to: &str, num_of_threads: usize, max_num_of_links: usi
                     break;
                 }
                 let url: String = url.unwrap();
-                if tx.send(get_links(&url[..], &mut client).unwrap()).is_err() {
+                if tx.send(get_links(url.as_str(), &mut client).unwrap()).is_err() {
                     break;
                 }
             }
