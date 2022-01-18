@@ -1,17 +1,28 @@
 use std::collections::HashMap;
 use std::collections::LinkedList;
+use std::fs::File;
+use std::io::Write;
 use std::mem::swap;
-use std::str::from_utf8;
+use std::sync::mpsc::Receiver;
 use std::sync::mpsc::{self, Sender};
 use std::sync::mpsc::TryRecvError;
 use std::thread;
 
 use reqwest::blocking::Client;
 
+use crate::bench::Bench;
+
 fn get_html(from: &str, client: &mut Client) -> Result<String, Box<dyn std::error::Error>> {
     Ok(client.get(from).send()?.text()?)
 }
+fn get_html_bench(from: &str, client: &mut Client, bench: &mut Bench) -> Result<String, Box<dyn std::error::Error>> {
+    bench.start();
+    let r = get_html(from, client);
+    bench.stop(0);
+    r
+}
 
+#[allow(dead_code)]
 fn get_links(from: &str, client: &mut Client) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     //let start = Instant::now();
 
@@ -23,7 +34,7 @@ fn get_links(from: &str, client: &mut Client) -> Result<Vec<String>, Box<dyn std
     if let Some(beg) = beg {
         let mut res = Vec::new();
 
-        let mut x = from_utf8(&html.as_bytes()[beg..]).unwrap();
+        let mut x = &html[beg..];
         
         while let Some(ind) = x.find("<a href=\"/wiki/") {
             x = &x[ind + 15..];
@@ -46,6 +57,75 @@ fn get_links(from: &str, client: &mut Client) -> Result<Vec<String>, Box<dyn std
     }
     else {
         Ok(vec![])
+    }
+}
+fn get_links_bench(from: &str, client: &mut Client, bench: &mut Bench) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let html = get_html_bench(("https://en.wikipedia.org/wiki/".to_string() + &from).as_str(), client, bench)?;
+
+    //println!("get_html took {:?}", start.elapsed());
+
+    bench.start();
+
+    let beg = html.find("<div id=\"mw-content-text\"");
+    if let Some(beg) = beg {
+        let mut res = Vec::new();
+
+        let mut x = &html[beg..];
+        
+        while let Some(ind) = x.find("<a href=\"/wiki/") {
+            x = &x[ind + 15..];
+            let ref_end = x.find("\"").unwrap();
+            let r = &x[..ref_end];
+            if !r.contains(':') {
+                res.push(r.to_string());
+            }
+            x = &x[ref_end..];
+        }
+
+        bench.stop(1);
+        Ok(res)
+    }
+    else {
+        bench.stop(1);
+        Ok(vec![])
+    }
+}
+
+fn collect_benches(bench_reciever: &Receiver<Bench>) -> Bench {
+    let mut benches = Vec::new();
+    loop {
+        let recv_res = bench_reciever.try_recv();
+        if recv_res.is_err() {
+            if recv_res.unwrap_err() == TryRecvError::Empty {
+                break;
+            }
+        }
+        else {
+            benches.push(recv_res.unwrap());
+        }
+    }
+
+    let mut res = Bench::new();
+    for bench in &benches {
+        res.combine(bench);
+    }
+    res
+}
+
+fn write_bench_results(bench_results: &Bench, path: &str) {
+    let file = File::create(path);
+
+    if file.is_err() {
+        eprintln!("Error while creating a bench results file({}): {:?}", path, file.unwrap_err());
+    }
+    else {
+        let mut file = file.unwrap();
+        for i in 0..=255u8 {
+            let dur = bench_results.get_duration(i);
+            if dur.as_nanos() > 0 {
+                file.write_all(format!("{}: {}s\n", i, dur.as_secs_f64()).as_bytes()).unwrap();
+            }
+        }
     }
 }
 
@@ -77,25 +157,34 @@ pub fn search(from: &str, to: &str, num_of_threads: usize, max_num_of_links: usi
     let mut states = Vec::new();
     let mut plinks: Vec<Option<String>> = Vec::new();
 
+    let (bench_sender, bench_reciever) = mpsc::channel();
+
     for _ in 0..num_of_threads {
         let (tx1, rx) = mpsc::channel(); // from main thread
         let (tx, rx1) = mpsc::channel(); // to main thread
         txs.push(tx1);
         rxs.push(rx1);
 
+        let bench_sender = bench_sender.clone();
+
         handlers.push(thread::spawn(move || {
             let mut client = Client::default();
             
+            let mut bench = Bench::new();
             loop {
                 let url = rx.recv();
                 if url.is_err() {
                     break;
                 }
                 let url: String = url.unwrap();
-                if tx.send(get_links(url.as_str(), &mut client).unwrap()).is_err() {
+                if url == "kill".to_string() {
+                    break;
+                }
+                if tx.send(get_links_bench(url.as_str(), &mut client, &mut bench).unwrap()).is_err() {
                     break;
                 }
             }
+            bench_sender.send(bench).unwrap();
         }));
 
         states.push(ThreadState::Idle);
@@ -117,6 +206,15 @@ pub fn search(from: &str, to: &str, num_of_threads: usize, max_num_of_links: usi
                 let res = num_of_links_sender.send((processed, in_search.len() + in_search_next.len()));
                 if res.is_err() {
                     eprintln!("Main thread is closed");
+
+                    for tx in txs {
+                        let _ = tx.send("kill".to_string());
+                    }
+                    for handler in handlers {
+                        let _ = handler.join();
+                    }
+                    write_bench_results(&collect_benches(&bench_reciever), "bench.txt");
+
                     return vec![];
                 }
 
@@ -125,6 +223,15 @@ pub fn search(from: &str, to: &str, num_of_threads: usize, max_num_of_links: usi
 
             if max_num_of_links > 0 && in_search.len() + in_search_next.len() >= max_num_of_links {
                 eprintln!("Max number of links in the queue exceeded");
+
+                for tx in txs {
+                    let _ = tx.send("kill".to_string());
+                }
+                for handler in handlers {
+                    let _ = handler.join();
+                }
+                write_bench_results(&collect_benches(&bench_reciever), "bench.txt");
+
                 return vec![];
             }
 
@@ -151,6 +258,14 @@ pub fn search(from: &str, to: &str, num_of_threads: usize, max_num_of_links: usi
                                         res.push(li.clone());
                                     }
                                     res.reverse();
+
+                                    for tx in txs {
+                                        let _ = tx.send("kill".to_string());
+                                    }
+                                    for handler in handlers {
+                                        let _ = handler.join();
+                                    }
+                                    write_bench_results(&collect_benches(&bench_reciever), "bench.txt");
                                     return res;
                                 }
                                 
@@ -172,7 +287,7 @@ pub fn search(from: &str, to: &str, num_of_threads: usize, max_num_of_links: usi
                                 plinks[i] = None;
 
                                 eprintln!("Thread {} died", i);
-                                dead_threads_sender.send(i).unwrap();
+                                let _ = dead_threads_sender.send(i);
                             }
                         },
                     }
