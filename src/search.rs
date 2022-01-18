@@ -15,7 +15,7 @@ fn get_html(from: &str, client: &mut Client) -> Result<String, Box<dyn std::erro
 fn get_links(from: &str, client: &mut Client) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     //let start = Instant::now();
 
-    let html = get_html(from, client)?;
+    let html = get_html(&("https://en.wikipedia.org/wiki/".to_string() + &from)[..], client)?;
 
     //println!("get_html took {:?}", start.elapsed());
 
@@ -37,7 +37,7 @@ fn get_links(from: &str, client: &mut Client) -> Result<Vec<String>, Box<dyn std
                 !r.starts_with("Template:") && 
                 !r.starts_with("Portal:") && 
                 !r.starts_with("Help:") {
-                res.push("https://en.wikipedia.org/wiki/".to_string() + r);
+                res.push(r.to_string());
             }
             x = &x[ref_end..];
         }
@@ -60,6 +60,8 @@ pub fn search(from: &str, to: &str, num_of_threads: usize, max_num_of_links: usi
     if from == to {
         return vec![from.to_string()];
     }
+    let from = &from[from.rfind('/').unwrap() + 1..];
+    let to = &to[to.rfind('/').unwrap() + 1..];
 
     let mut all = HashMap::new();
     all.insert(from.to_string(), "".to_string());
