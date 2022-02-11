@@ -12,11 +12,17 @@ use reqwest::blocking::Client;
 
 use crate::bench::Bench;
 
+macro_rules! starts_with_any {
+    ($s:expr; $($pats:expr),+) => {
+        $($s.starts_with($pats))||+
+    };
+}
+
 fn get_html(from: &str, client: &mut Client) -> Result<String, Box<dyn std::error::Error>> {
     Ok(client.get(from).send()?.text()?)
 }
 fn get_html_bench(from: &str, client: &mut Client, bench: &mut Bench) -> Result<String, Box<dyn std::error::Error>> {
-    bench.start();
+    bench.start(0);
     let r = get_html(from, client);
     bench.stop(0);
     r
@@ -24,11 +30,7 @@ fn get_html_bench(from: &str, client: &mut Client, bench: &mut Bench) -> Result<
 
 #[allow(dead_code)]
 fn get_links(from: &str, client: &mut Client) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    //let start = Instant::now();
-
     let html = get_html(("https://en.wikipedia.org/wiki/".to_string() + &from).as_str(), client)?;
-
-    //println!("get_html took {:?}", start.elapsed());
 
     let beg = html.find("<div id=\"mw-content-text\"");
     if let Some(beg) = beg {
@@ -40,14 +42,7 @@ fn get_links(from: &str, client: &mut Client) -> Result<Vec<String>, Box<dyn std
             x = &x[ind + 15..];
             let ref_end = x.find("\"").unwrap();
             let r = &x[..ref_end];
-            if !r.starts_with("File:") && 
-                !r.starts_with("Category:") && 
-                !r.starts_with("Special:") && 
-                !r.starts_with("Talk:") && 
-                !r.starts_with("Wikipedia:") && 
-                !r.starts_with("Template:") && 
-                !r.starts_with("Portal:") && 
-                !r.starts_with("Help:") {
+            if starts_with_any!(r; "File:", "Category:", "Special:", "Talk:", "Wikipedia:", "Template:", "Portal:", "Help:") {
                 res.push(r.to_string());
             }
             x = &x[ref_end..];
@@ -62,9 +57,7 @@ fn get_links(from: &str, client: &mut Client) -> Result<Vec<String>, Box<dyn std
 fn get_links_bench(from: &str, client: &mut Client, bench: &mut Bench) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let html = get_html_bench(("https://en.wikipedia.org/wiki/".to_string() + &from).as_str(), client, bench)?;
 
-    //println!("get_html took {:?}", start.elapsed());
-
-    bench.start();
+    bench.start(1);
 
     let beg = html.find("<div id=\"mw-content-text\"");
     if let Some(beg) = beg {
@@ -136,7 +129,178 @@ enum ThreadState {
     Error,
 }
 
-pub fn search(from: &str, to: &str, num_of_threads: usize, max_num_of_links: usize, num_of_links_sender: Sender<(usize, usize)>, dead_threads_sender: Sender<usize>) -> Vec<String> {
+#[allow(dead_code)]
+pub fn search(from: &str, to: &str, num_of_threads: usize, max_num_of_links: usize, num_of_links_sender: Sender<(usize, usize, usize)>, dead_threads_sender: Sender<usize>) -> Vec<String> {
+    if from == to {
+        return vec![from.to_string()];
+    }
+    let from = &from[from.rfind('/').unwrap() + 1..];
+    let to = &to[to.rfind('/').unwrap() + 1..];
+
+    let mut all = HashMap::new();
+    all.insert(from.to_string(), "".to_string());
+
+    let mut in_search = LinkedList::new();
+    in_search.push_back(from.to_string());
+
+    let mut in_search_next = LinkedList::new();
+
+    let mut txs = Vec::new();
+    let mut rxs = Vec::new();
+    let mut handlers = Vec::new();
+    let mut states = Vec::new();
+    let mut plinks: Vec<Option<String>> = Vec::new();
+
+    for _ in 0..num_of_threads {
+        let (tx1, rx) = mpsc::channel(); // from main thread
+        let (tx, rx1) = mpsc::channel(); // to main thread
+        txs.push(tx1);
+        rxs.push(rx1);
+
+        handlers.push(thread::spawn(move || {
+            let mut client = Client::default();
+            
+            loop {
+                let url = rx.recv();
+                if url.is_err() {
+                    break;
+                }
+                let url: String = url.unwrap();
+                if url == "kill".to_string() {
+                    break;
+                }
+                if tx.send(get_links(url.as_str(), &mut client).unwrap()).is_err() {
+                    break;
+                }
+            }
+        }));
+
+        states.push(ThreadState::Idle);
+        plinks.push(None);
+    }
+
+    let mut processed = 0usize;
+
+    let mut depth_level = 1usize;
+
+    let mut num_of_links_changed = true;
+    // while path betweeen links is not found
+    loop {
+        // while every link is in_search is not processed
+        while !in_search.is_empty() || states.contains(&ThreadState::Processing) {
+            if num_of_links_changed {
+                let res = num_of_links_sender.send((processed, in_search.len() + in_search_next.len(), depth_level));
+                if res.is_err() {
+                    eprintln!("Main thread is closed");
+
+                    for tx in txs {
+                        let _ = tx.send("kill".to_string());
+                    }
+                    for handler in handlers {
+                        let _ = handler.join();
+                    }
+
+                    return vec![];
+                }
+
+                num_of_links_changed = false;
+            }
+
+            if max_num_of_links > 0 && in_search.len() + in_search_next.len() >= max_num_of_links {
+                eprintln!("Max number of links in the queue exceeded");
+
+                for tx in txs {
+                    let _ = tx.send("kill".to_string());
+                }
+                for handler in handlers {
+                    let _ = handler.join();
+                }
+
+                return vec![];
+            }
+
+            for i in 0..num_of_threads {
+                if states[i] == ThreadState::Processing {
+                    let r = rxs[i].try_recv();
+
+                    match r {
+                        Ok(v) => {
+                            processed += 1;
+                            num_of_links_changed = true;
+
+                            for c in &v {
+                                if c == to {
+                                    let mut res = vec![];
+                    
+                                    let mut li = c.clone();
+                                    res.push(li.clone());
+                                    li = plinks[i].clone().unwrap();
+                                    res.push(li.clone());
+                    
+                                    while li != from {
+                                        li = all.get(&li).unwrap().clone();
+                                        res.push(li.clone());
+                                    }
+                                    res.reverse();
+
+                                    for tx in txs {
+                                        let _ = tx.send("kill".to_string());
+                                    }
+                                    for handler in handlers {
+                                        let _ = handler.join();
+                                    }
+                                    return res;
+                                }
+                                
+                                if !all.contains_key(c) {
+                                    all.insert(c.clone(), plinks[i].clone().unwrap());
+                                    in_search_next.push_back(c.clone());
+                                    num_of_links_changed = true;
+                                }
+                            }
+
+                            states[i] = ThreadState::Idle;
+                            plinks[i] = None;
+                        },
+                        Err(e) => {
+                            if e == TryRecvError::Disconnected {
+                                states[i] = ThreadState::Error;
+                                in_search.push_front(plinks[i].clone().unwrap());
+                                num_of_links_changed = true;
+                                plinks[i] = None;
+
+                                eprintln!("Thread {} died", i);
+                                let _ = dead_threads_sender.send(i);
+                            }
+                        },
+                    }
+                }
+            }
+
+            for i in 0..num_of_threads {
+                if states[i] == ThreadState::Idle {
+                    if !in_search.is_empty() {
+                        let link = in_search.pop_front().unwrap();
+                        num_of_links_changed = true;
+                        if txs[i].send(link.clone()).is_err() {
+                            states[i] = ThreadState::Error;
+                            eprintln!("Error while sending to thread №{}", i);
+                        }
+                        states[i] = ThreadState::Processing;
+                        plinks[i] = Some(link.clone());
+
+                        //println!("List size is {}. Checking {}", in_search.len() + in_search_next.len(), link);
+                    }
+                }
+            }
+        }
+
+        swap(&mut in_search, &mut in_search_next);
+        depth_level += 1;
+    }
+}
+
+pub fn search_bench(from: &str, to: &str, num_of_threads: usize, max_num_of_links: usize, num_of_links_sender: Sender<(usize, usize, usize)>, dead_threads_sender: Sender<usize>) -> Vec<String> {
     if from == to {
         return vec![from.to_string()];
     }
@@ -193,9 +357,7 @@ pub fn search(from: &str, to: &str, num_of_threads: usize, max_num_of_links: usi
 
     let mut processed = 0usize;
 
-    //let gstart = Instant::now();
-
-    let mut _level = 0usize;
+    let mut depth_level = 0usize;
 
     let mut num_of_links_changed = true;
     // while path betweeen links is not found
@@ -203,7 +365,7 @@ pub fn search(from: &str, to: &str, num_of_threads: usize, max_num_of_links: usi
         // while every link is in_search is not processed
         while !in_search.is_empty() || states.contains(&ThreadState::Processing) {
             if num_of_links_changed {
-                let res = num_of_links_sender.send((processed, in_search.len() + in_search_next.len()));
+                let res = num_of_links_sender.send((processed, in_search.len() + in_search_next.len(), depth_level));
                 if res.is_err() {
                     eprintln!("Main thread is closed");
 
@@ -313,6 +475,6 @@ pub fn search(from: &str, to: &str, num_of_threads: usize, max_num_of_links: usi
         }
 
         swap(&mut in_search, &mut in_search_next);
-        _level += 1;
+        depth_level += 1;
     }
 }

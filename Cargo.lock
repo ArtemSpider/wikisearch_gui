@@ -379,15 +379,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "eframe_template"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "reqwest",
- "serde",
-]
-
-[[package]]
 name = "egui"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1967,6 +1958,15 @@ name = "widestring"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c168940144dd21fd8046987c16a46a33d5fc84eec29ef9dcddc2ac9e31526b7c"
+
+[[package]]
+name = "wikisearch-gui"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "reqwest",
+ "serde",
+]
 
 [[package]]
 name = "winapi"

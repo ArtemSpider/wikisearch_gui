@@ -11,9 +11,10 @@ pub struct SearchingInfo {
     //search_thread: JoinHandle<()>,
     result_reciever: Receiver<Vec<String>>,
 
-    num_of_links: Receiver<(usize, usize)>, // (num_of_processed, num_in_queue)
+    num_of_links: Receiver<(usize, usize, usize)>, // (num_of_processed, num_in_queue, search_depth)
     num_of_processed: usize,
     num_in_queue: usize,
+    search_depth: usize,
 
     threads: usize,
 
@@ -37,7 +38,7 @@ impl SearchingInfo {
         let (res_sender, res_reciever) = mpsc::channel();
 
         let _thread = thread::spawn(move || {
-            let res = search::search(sf.as_str(), st.as_str(), threads, 0, nol_sender, dt_sender);
+            let res = search::search_bench(sf.as_str(), st.as_str(), threads, 0, nol_sender, dt_sender);
             res_sender.send(res).unwrap();
         });
         
@@ -49,6 +50,7 @@ impl SearchingInfo {
             num_of_links: nol_reciever,
             num_of_processed: 0,
             num_in_queue: 0,
+            search_depth: 0,
             threads,
             dead_threads_rec: dt_reciever,
             threads_state: vec![true; threads],
@@ -62,6 +64,7 @@ pub struct FoundInfo {
     search_to: String,
     used_threads: usize,
     num_of_processed: usize,
+    search_depth: usize,
     duration: Duration,
 
     path: Vec<String>,
@@ -74,6 +77,7 @@ impl FoundInfo {
             search_to: searching_info.search_to.clone(),
             used_threads: searching_info.threads,
             num_of_processed: searching_info.num_of_processed,
+            search_depth: searching_info.search_depth,
             duration: searching_info.start_instant.elapsed(),
             path,
         }
@@ -169,9 +173,10 @@ impl TemplateApp {
             loop {
                 let nol_res = info.num_of_links.try_recv();
                 match nol_res {
-                    Ok((pl, ql)) => {
+                    Ok((pl, ql, dp)) => {
                         info.num_of_processed = pl;
                         info.num_in_queue = ql;
+                        info.search_depth = dp;
                     },
                     Err(reason) => {
                         match reason {
@@ -187,6 +192,7 @@ impl TemplateApp {
     
             ui.label(format!("Pages processed: {} ({} per second)", info.num_of_processed, (info.num_of_processed as f32 / info.start_instant.elapsed().as_secs_f32()) as u32));
             ui.label(format!("Pages in queue: {}", info.num_in_queue));
+            ui.label(format!("Search depth level: {}", info.search_depth));
             ui.label(format!("Elapsed time: {}s", info.start_instant.elapsed().as_secs_f32().to_string()));
 
             let dt_res = info.dead_threads_rec.try_recv();
@@ -226,6 +232,7 @@ impl TemplateApp {
             ui.label(format!("{} thread{} were used", info.used_threads.to_string(), if info.used_threads > 1 {"s"} else {""}));
 
             ui.label(format!("Pages processed: {} ({} per second)", info.num_of_processed, (info.num_of_processed as f32 / info.duration.as_secs_f32()) as u32));
+            ui.label(format!("Search depth level: {}", info.search_depth));
             ui.label(format!("Elapsed time: {}s", info.duration.as_secs_f32().to_string()));
     
             ui.label("Path:");

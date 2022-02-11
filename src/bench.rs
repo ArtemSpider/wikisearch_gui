@@ -2,7 +2,7 @@ use std::{time::{Instant, Duration}};
 
 #[derive(std::fmt::Debug)]
 pub struct Bench {
-    instant: Instant,
+    instants: [Instant; 256],
     durations: [u64; 256],
 }
 
@@ -10,7 +10,7 @@ pub struct Bench {
 impl Bench {
     pub fn new() -> Self {
         Self {
-            instant: Instant::now(),
+            instants: [Instant::now(); 256],
             durations: [0; 256],
         }
     }
@@ -21,11 +21,11 @@ impl Bench {
         }
     }
 
-    pub fn start(&mut self) {
-        self.instant = Instant::now();
+    pub fn start(&mut self, id: u8) {
+        self.instants[id as usize] = Instant::now();
     }
     pub fn stop(&mut self, id: u8) {
-        self.durations[id as usize] += self.instant.elapsed().as_nanos() as u64;
+        self.durations[id as usize] += self.instants[id as usize].elapsed().as_nanos() as u64;
     }
 
     pub fn call_closure<F>(&mut self, id: u8, f: F) where F: FnOnce() {
@@ -56,13 +56,11 @@ impl Bench {
 }
 
 #[macro_export]
-macro_rules! combench {
+macro_rules! comine_benches {
     ( $( $x:expr ),* ) => {
         {
             let mut temp_bench = crate::bench::Bench::new();
-            $(
-                temp_bench.combine($x);
-            )*
+            $(temp_bench.combine($x);)*
             temp_bench
         }
     };
